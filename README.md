@@ -82,4 +82,3 @@ python scrape.py --state TX --csv tx_data.csv
 
 - **Disclaimer**: This app scrapes data from a third-party aggregator (lottery.net). Data accuracy depends on the source.
 - **Status**: The scraper normalizes data from the source, handling various column naming conventions automatically.
-- **Dependencies**: While `pdfplumber` is listed in dependencies, the current version of the app focuses on web scraping and does not utilize PDF features.

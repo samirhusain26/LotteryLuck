@@ -4,5 +4,4 @@ beautifulsoup4>=4.12.2
 lxml>=4.9.3
 pandas>=2.1.0
 numpy>=1.26.0
-pdfplumber>=0.11.0
 plotly>=5.18.0 
