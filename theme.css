@@ -1,0 +1,114 @@
+/* Premium Dark Glassmorphism Theme */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap');
+
+:root {
+  --bg-gradient-start: #0f172a; /* Slate 900 */
+  --bg-gradient-end: #020617;   /* Slate 950 */
+  
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  
+  --accent-primary: #8b5cf6;    /* Violet 500 */
+  --accent-secondary: #3b82f6;  /* Blue 500 */
+  --accent-glow: rgba(139, 92, 246, 0.5);
+  
+  --glass-bg: rgba(30, 41, 59, 0.7); /* Slate 800 with opacity */
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  
+  --danger: #ef4444;
+  --success: #10b981;
+}
+
+html, body, [data-testid="stAppViewContainer"] {
+  font-family: 'Inter', sans-serif;
+  background: radial-gradient(circle at top left, #1e293b, #0f172a) !important;
+  color: var(--text-primary);
+}
+
+/* Custom Header Styling */
+h1, h2, h3 {
+  font-weight: 800 !important;
+  background: linear-gradient(to right, #c084fc, #60a5fa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 30px rgba(139, 92, 246, 0.3);
+}
+
+/* Glassmorphic Cards for Metrics & Data */
+div[data-testid="stMetric"], 
+div[data-testid="stDataFrame"],
+.stPlotlyChart {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 1.5rem;
+  box-shadow: var(--glass-shadow);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+div[data-testid="stMetric"]:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px 0 rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+/* Primary Buttons */
+.stButton > button {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)) !important;
+  color: white !important;
+  border: none !important;
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  padding: 0.6rem 1.2rem !important;
+  box-shadow: 0 4px 15px var(--accent-glow);
+  transition: all 0.3s ease !important;
+}
+
+.stButton > button:hover {
+  filter: brightness(1.2);
+  box-shadow: 0 6px 20px var(--accent-glow);
+  transform: scale(1.02);
+}
+
+/* Inputs & Selectboxes */
+.stSelectbox > div > div {
+  background-color: rgba(30, 41, 59, 0.8) !important;
+  color: white !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 12px !important;
+}
+
+/* Dataframes */
+[data-testid="stDataFrame"] {
+  background: transparent !important; /* Let the container glass effect work */
+  border: none !important;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0f172a; 
+}
+::-webkit-scrollbar-thumb {
+  background: #334155; 
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569; 
+}
+
+/* Dead Game Row Highlight Override specific for dark mode legibility */
+/* We will handle the row logic in Python, but we can set some generic table styles here if needed */
+
+/* Expander Styling */
+.streamlit-expanderHeader {
+    background-color: var(--glass-bg) !important;
+    color: var(--text-primary) !important;
+    border-radius: 8px !important;
+}
