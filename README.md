@@ -6,11 +6,10 @@ Supported states: **NJ, NY, PA, TX, CA, FL**.
 
 ## Features
 
-- **Overview cards** for games shown, games that still have a top prize, best published odds, and the most prize value left.
-- **Games table** you can sort and filter by price, name, or game number. You can hide games with no top prizes left and download the results as CSV.
-- **Explore charts** comparing win chance with prize value left, plus average odds at each price point.
-- **Game detail** for each game: its tiers, how many prizes were printed, claimed, and remain, and a link to the source page.
-- **How it works** tab that labels every metric as *published* (from the source) or *calculated* (our estimate).
+- **Summary strip:** how many games there are, how many still have a top prize, the best odds, and the average prize value left.
+- **Charts:** win chance vs. prize value left for every game, plus a donut showing the share of games with a top prize still out.
+- **Games list:** a ranked list with value-left bars that you can sort and filter by price or name.
+- **Prize tiers:** for any game, how much of each prize tier is still unclaimed.
 
 ## Metrics
 
