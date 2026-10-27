@@ -1,27 +1,27 @@
-# 🍀 Lottery Luck
+# 🎟️ Lottery Luck
 
-A Streamlit dashboard that scrapes scratch-off data from [lottery.net](https://www.lottery.net) and its [scratchcards.net](https://scratchcards.net) detail pages. It puts published odds next to how much of each game's prize pool is still unclaimed, so you can skip games whose big prizes are already gone.
+A Streamlit app for comparing scratch-off tickets across US states, using data from [scratchcards.net](https://scratchcards.net).
 
-Supported states: **NJ, NY, PA, TX, CA, FL**.
+## What you can do
 
-## Features
-
-- **Summary strip:** how many games there are, how many still have a top prize, the best odds, and the average prize value left.
-- **Charts:** win chance vs. prize value left for every game, plus a donut showing the share of games with a top prize still out.
-- **Games list:** a ranked list with value-left bars that you can sort and filter by price or name.
-- **Prize tiers:** for any game, how much of each prize tier is still unclaimed.
+- **Pick a state on the map**, or from the dropdown. States are shaded by how much prize value is left.
+- **Browse game cards**, each with odds, a gauge for prize value left, and your odds of winning $1K or more.
+- **Filter by budget** (max ticket price), search by name or game number, and sort by value, odds, or top prize.
+- **Open any game** for the full picture: your odds of winning big ($100+, $1K+, $10K+, top prize), prizes left in each tier, and links to the official state lottery and the source data.
+- **Compare up to 4 games** side by side.
+- **Share any view.** The address bar always holds the current state, filters, comparison and open game.
 
 ## Metrics
 
 | Metric | Type | Definition |
 | --- | --- | --- |
 | Overall odds | Published | Odds of winning any prize ("1 in X"). |
-| Win chance | Published | `1 / overall odds`, shown as a percentage. |
-| Top prize / top prizes left | Published | From the lottery.net list, or from tier 1 of the detail page when the list leaves them out (e.g. PA). Annuity prizes like `$1K/WK/LIFE` stay as text. |
-| Prizes left | Calculated | Remaining prizes summed across the tiers the source tracks. |
-| Prize value left | Calculated | `Σ(prize × remaining) / Σ(prize × printed)` across tracked tiers. Free-ticket prizes count at the ticket price, and annuity prizes are left out. It's blank when printed quantities aren't published. |
+| Top prizes left | Published | Remaining count of the top prize tier. |
+| Prize value left | Calculated | `Σ(prize × remaining) / Σ(prize × printed)` across listed tiers. Free tickets count at face value; annuity prizes are left out. |
+| Tickets printed | Calculated | `total prizes printed × overall odds`. |
+| Odds of winning $X+ | Calculated | `tickets printed / prizes worth at least $X printed`. This covers the full print run, not just the tickets still unsold. |
 
-The dashboard intentionally **does not report an expected value**. A real EV needs the number of unsold tickets, and no source publishes it.
+Calculated metrics need printed prize counts, and some states (for example, PA) don't publish them. No true expected value is shown, because no source publishes how many tickets are unsold.
 
 ## Getting started
 
@@ -32,28 +32,25 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app reads `scratchoffs_<STATE>.csv` from the project folder. If a state has no CSV yet, the app scrapes it on first load. You can also click **Refresh from lottery.net** in the sidebar, which takes about a second per game.
+The app reads saved snapshots from `data/scratchoffs_<STATE>.csv`. If a state has no snapshot, you can fetch it from the app.
 
-## Scraper CLI
-
-`scrape.py` also works on its own:
+## Updating the data
 
 ```bash
-python scrape.py --state NJ                 # writes scratchoffs_NJ.csv
-python scrape.py --state TX --csv tx.csv    # custom output path
-python scrape.py --state NY --no-details    # list page only, no tier data
-python scrape.py --state PA --json          # also print rows as JSON
+python scrape.py --state NJ                 # one state
+python scrape.py --all --skip-existing      # fill in missing states
+python scrape.py --all                      # refresh everything
 ```
 
-Progress messages go to stderr. In the CSV, `prize_data` is a JSON array of tiers: `tier`, `prize_text`, `prize`, `is_ticket`, `quantity`, `claimed`, `remaining`.
+The scraper sends one request at a time, pauses between requests, and waits it out when the site rate-limits it. A full refresh takes a while.
 
 ## Project layout
 
-- `app.py`: Streamlit UI and display-only derived fields.
-- `scrape.py`: scraping, normalization, and the tier-based metrics.
-- `theme.css` and `.streamlit/config.toml`: theme and styling.
-- `scratchoffs_*.csv`: saved snapshots for each state.
+- `app.py`: Streamlit UI (map, cards, details, compare, share links).
+- `scrape.py`: scraping, parsing, and the tier-based metrics.
+- `theme.css` and `.streamlit/config.toml`: styling.
+- `data/`: saved snapshots for each state.
 
 ## Disclaimer
 
-Data comes from third-party aggregators and may lag official state lottery reports. This is an informational tool, not financial advice. On average, scratch-offs lose money, so play responsibly. Need help? Call 1-800-GAMBLER.
+The data comes from a third-party aggregator and may lag official state lottery reports. This is an informational tool, not financial advice. On average, scratch-offs lose money. Need help? Call 1-800-GAMBLER.
