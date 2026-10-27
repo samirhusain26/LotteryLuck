@@ -1,84 +1,60 @@
-# Lottery Luck Dashboard
+# 🍀 Lottery Luck
 
-A Streamlit application that scrapes and analyzes **Multi-State Lottery scratch-off** data from [lottery.net](https://www.lottery.net). It provides a clean, sortable interface to help you find the best games based on odds and expected value.
+A Streamlit dashboard that scrapes scratch-off data from [lottery.net](https://www.lottery.net) and its [scratchcards.net](https://scratchcards.net) detail pages. It puts published odds next to how much of each game's prize pool is still unclaimed, so you can skip games whose big prizes are already gone.
+
+Supported states: **NJ, NY, PA, TX, CA, FL**.
 
 ## Features
 
-- **Live Data Scraping**: Fetches up-to-date scratch-off data directly from lottery.net for **NJ, NY, PA, TX, CA, and FL**.
-- **Interactive Dashboard**: Organized into three main sections:
-    - **Game Browser**: Sortable table with "Dead Game" highlighting (games with 0 top prizes remaining shown in red).
-    - **Analytics**: Visual scatter plot comparing Ticket Price vs. True EV.
-    - **User Guide**: Built-in documentation explaining metrics and strategies.
-- **Metrics Analysis**: Automatically calculates key metrics for each game:
-    - **True Expected Value (EV)** per ticket (calculated from remaining prizes).
-    - **Win Probability**: Probability of winning any prize.
-- **Deep Scraping**: Visits individual game pages to scrape full prize tables for accurate EV calculation.
-- **Smart Filtering**:
-    - Filter by Ticket Price ($1, $2, $5, $10, etc).
-    - Visual indicators for "Dead Games".
-- **CSV Export**: Data is automatically saved to CSV when scraped.
-- **Mobile-Friendly UI**: Responsive layout built with Streamlit.
+- **Overview cards** for games shown, games that still have a top prize, best published odds, and the most prize value left.
+- **Games table** you can sort and filter by price, name, or game number. You can hide games with no top prizes left and download the results as CSV.
+- **Explore charts** comparing win chance with prize value left, plus average odds at each price point.
+- **Game detail** for each game: its tiers, how many prizes were printed, claimed, and remain, and a link to the source page.
+- **How it works** tab that labels every metric as *published* (from the source) or *calculated* (our estimate).
 
-## Technology Stack
+## Metrics
 
-- **Python**: Core programming language.
-- **Streamlit**: Web application framework for the interactive dashboard.
-- **Pandas**: Data manipulation and analysis.
-- **Plotly**: Interactive charts and visualizations.
-- **Requests & BeautifulSoup4**: Robust web scraping and HTML parsing.
+| Metric | Type | Definition |
+| --- | --- | --- |
+| Overall odds | Published | Odds of winning any prize ("1 in X"). |
+| Win chance | Published | `1 / overall odds`, shown as a percentage. |
+| Top prize / top prizes left | Published | From the lottery.net list, or from tier 1 of the detail page when the list leaves them out (e.g. PA). Annuity prizes like `$1K/WK/LIFE` stay as text. |
+| Prizes left | Calculated | Remaining prizes summed across the tiers the source tracks. |
+| Prize value left | Calculated | `Σ(prize × remaining) / Σ(prize × printed)` across tracked tiers. Free-ticket prizes count at the ticket price, and annuity prizes are left out. It's blank when printed quantities aren't published. |
 
-## Project Structure
+The dashboard intentionally **does not report an expected value**. A real EV needs the number of unsold tickets, and no source publishes it.
 
-- `app.py`: The main Streamlit web application. Handles UI, user inputs, and metric calculations.
-- `scrape.py`: The scraping engine. Can be imported as a module or run as a standalone CLI script to save data to CSV.
-- `theme.css`: Custom CSS for styling the Streamlit interface.
-- `requirements.txt`: List of Python dependencies.
+## Getting started
 
-## Installation
-
-1.  **Clone the repository** (if applicable) or navigate to the project folder.
-
-2.  **Create a virtual environment** (recommended):
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
-    ```
-
-3.  **Install dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-### Running the Web App
-To start the interactive dashboard:
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 streamlit run app.py
 ```
-The app will open in your default web browser at `http://localhost:8501`.
 
-### Running the Scraper (CLI)
-You can also run the scraper directly from the command line to generate a CSV dataset without starting the web app. You must specify the state abbreviation (default is NJ).
+The app reads `scratchoffs_<STATE>.csv` from the project folder. If a state has no CSV yet, the app scrapes it on first load. You can also click **Refresh from lottery.net** in the sidebar, which takes about a second per game.
+
+## Scraper CLI
+
+`scrape.py` also works on its own:
 
 ```bash
-# Default (New Jersey)
-python scrape.py --csv nj_data.csv
-
-# New York
-python scrape.py --state NY --csv ny_data.csv
-
-# Texas
-python scrape.py --state TX --csv tx_data.csv
+python scrape.py --state NJ                 # writes scratchoffs_NJ.csv
+python scrape.py --state TX --csv tx.csv    # custom output path
+python scrape.py --state NY --no-details    # list page only, no tier data
+python scrape.py --state PA --json          # also print rows as JSON
 ```
 
-## Data Metrics Explained
+Progress messages go to stderr. In the CSV, `prize_data` is a JSON array of tiers: `tier`, `prize_text`, `prize`, `is_ticket`, `quantity`, `claimed`, `remaining`.
 
-- **Overall Odds**: The published odds of winning *any* prize (e.g., 1 in 4.5). Lower is better.
-- **Win Probability**: The percentage probability of winning a prize on a single ticket (1 / Overall Odds).
-- **True EV**: The estimated return on a $1 spend, calculated by summing `(Prize Value * Remaining Count)` for all prize tiers and dividing by the total remaining tickets. This is significantly more accurate than using just the top prize.
+## Project layout
 
-## Notes
+- `app.py`: Streamlit UI and display-only derived fields.
+- `scrape.py`: scraping, normalization, and the tier-based metrics.
+- `theme.css` and `.streamlit/config.toml`: theme and styling.
+- `scratchoffs_*.csv`: saved snapshots for each state.
 
-- **Disclaimer**: This app scrapes data from a third-party aggregator (lottery.net). Data accuracy depends on the source.
-- **Status**: The scraper normalizes data from the source, handling various column naming conventions automatically.
+## Disclaimer
+
+Data comes from third-party aggregators and may lag official state lottery reports. This is an informational tool, not financial advice. On average, scratch-offs lose money, so play responsibly. Need help? Call 1-800-GAMBLER.

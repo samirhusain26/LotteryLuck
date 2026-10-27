@@ -1,335 +1,466 @@
-import os
-import pandas as pd
-import streamlit as st
-import plotly.express as px
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import html
+import json
 import math
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from scrape import scrape_lottery_net_df, STATE_SLUGS
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
-st.set_page_config(page_title="Lottery Luck Dashboard", page_icon="🍀", layout="wide")
+from scrape import STATE_NAMES, STATE_SLUGS, scrape_lottery_net_df
 
-# --- Custom CSS Import ---
-with open("theme.css") as f:
-    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+APP_DIR = Path(__file__).parent
+DISPLAY_TZ = ZoneInfo("America/New_York")
+STALE_AFTER_DAYS = 7
 
-# --- Helper Functions ---
-def format_large_number(num):
-    """Formats a number with K, M, B suffixes."""
-    if num is None or math.isnan(num):
-        return "N/A"
-    num = float(num)
-    if num >= 1_000_000_000:
-        return f"{num / 1_000_000_000:.1f}B"
-    elif num >= 1_000_000:
-        return f"{num / 1_000_000:.1f}M"
-    elif num >= 1_000:
-        return f"{num / 1_000:.1f}K"
-    else:
-        return f"{num:.0f}"
+GOLD, EMERALD, RED, MUTED, TEXT = "#f5c451", "#34d399", "#f87171", "#8ba396", "#e8f0ea"
 
-def format_currency(num):
-    """Formats a number as currency with K, M, B suffixes if large."""
-    if num is None or pd.isna(num) or (isinstance(num, float) and math.isnan(num)):
-        return "Unknown"
-    if num >= 1000:
-        return f"${format_large_number(num)}"
-    return f"${num:.0f}"
+EXPECTED_COLUMNS = [
+    "game_number", "game_name", "price", "overall_odds_1_in", "top_prize_text", "top_prize_amount",
+    "top_prizes_remaining", "detail_url", "prize_data", "tracked_prizes_remaining",
+    "tracked_prizes_total", "prize_pool_remaining_pct", "scrape_ts",
+]
+NUMERIC_COLUMNS = [
+    "game_number", "price", "overall_odds_1_in", "top_prize_amount", "top_prizes_remaining",
+    "tracked_prizes_remaining", "tracked_prizes_total", "prize_pool_remaining_pct",
+]
 
-def format_percent(num):
-    """Formats a float as a percentage with 1 decimal place."""
-    if num is None or math.isnan(num):
-        return "0%"
-    return f"{num:.1f}%"
+st.set_page_config(page_title="Lottery Luck · Scratch-off Insights", page_icon="🍀", layout="wide")
+st.markdown(f"<style>{(APP_DIR / 'theme.css').read_text()}</style>", unsafe_allow_html=True)
 
-# --- Session State for User Guide ---
-if "first_visit" not in st.session_state:
-    st.session_state["first_visit"] = True
-if "show_guide" not in st.session_state:
-    st.session_state["show_guide"] = False
 
-# --- Dialog Function for User Guide ---
-@st.dialog("User Guide 📚")
-def user_guide_dialog():
-    st.markdown("""
-    ### Welcome to Lottery Luck! 🍀
-    
-    Make data-driven decisions when playing scratch-offs.
-    
-    ---
-    #### 1. Key Metrics 📊
-    *   **True EV (Expected Value)**: The theoretical worth of a ticket based on remaining prizes. **Higher is better.**
-    *   **Win Probability**: Your math chance of winning *any* prize.
-    *   **Saturation Index**: > 1.0 means the game is "rich" with prizes. < 1.0 means it's been picked clean.
+# ---------- Formatting ----------
+def is_missing(x) -> bool:
+    return x is None or (isinstance(x, float) and math.isnan(x)) or x is pd.NA
 
-    #### 2. Strategy 🧠
-    *   ✅ **Look for High EV**: Get the best bang for your buck.
-    *   🛑 **Avoid Dead Games**: Rows highlighted in **RED** have **0 Top Prizes** left. Don't chase a jackpot that doesn't exist!
 
-    ---
-    > **Note**: Data is scraped from public sources. Always double-check with official state lottery sites.
-    """)
-    if st.button("Got it! Let's Play"):
-        st.session_state["first_visit"] = False
-        st.rerun()
+def compact_money(x) -> str:
+    if is_missing(x):
+        return "—"
+    x = float(x)
+    for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(x) >= size:
+            return f"${x / size:.1f}".rstrip("0").rstrip(".") + suffix
+    return f"${x:,.0f}"
 
-# --- Auto-show User Guide on First Visit ---
-if st.session_state["first_visit"]:
-    user_guide_dialog()
 
-# --- Header & Controls Layout ---
-# Use columns to layout the top controls: Title, Region Selector, Refresh, Help
-col_title, col_state_select, col_refresh, col_help = st.columns([4, 2, 1, 1], vertical_alignment="bottom")
+def fmt_price(x) -> str:
+    return "—" if is_missing(x) else f"${x:g}"
 
-with col_title:
-    st.title("Lottery Luck 🍀")
 
-with col_state_select:
-    selected_state = st.selectbox(
-        "Region",
-        options=list(STATE_SLUGS.keys()),
-        index=0,
-        label_visibility="visible"
+def fmt_int(x) -> str:
+    return "—" if is_missing(x) else f"{int(x):,}"
+
+
+def esc(s) -> str:
+    return html.escape(str(s)) if not is_missing(s) else "—"
+
+
+# ---------- Data ----------
+def csv_path(state: str) -> Path:
+    return APP_DIR / f"scratchoffs_{state}.csv"
+
+
+@st.cache_data(show_spinner=False)
+def read_state_csv(path: str, mtime: float) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+
+def load_state(state: str) -> pd.DataFrame:
+    path = csv_path(state)
+    if not path.exists():
+        with st.spinner(f"No saved data for {STATE_NAMES[state]} yet. Scraping lottery.net (this takes a minute or two)…"):
+            fresh = scrape_lottery_net_df(state)
+        if fresh.empty:
+            return fresh
+        fresh.to_csv(path, index=False)
+    return prepare(read_state_csv(str(path), os.path.getmtime(path)))
+
+
+def prepare(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw.copy()
+    for c in EXPECTED_COLUMNS:
+        if c not in df.columns:
+            df[c] = pd.NA
+    for c in NUMERIC_COLUMNS:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    odds = df["overall_odds_1_in"]
+    df["win_pct"] = (100 / odds).where(odds > 0)
+    df["top_prize_label"] = [
+        compact_money(a) if not is_missing(a) else (t if isinstance(t, str) and t.strip() else "—")
+        for a, t in zip(df["top_prize_amount"], df["top_prize_text"])
+    ]
+    df["status"] = df["top_prizes_remaining"].map(
+        lambda n: "unknown" if is_missing(n) else ("dead" if n == 0 else "live")
     )
-
-DATA_FILE = f"scratchoffs_{selected_state}.csv"
-
-with col_refresh:
-    if st.button("🔄 Refresh", help="Force scrape fresh data"):
-        with st.spinner(f"Scraping {selected_state}..."):
-            st.cache_data.clear()
-            fresh_df = scrape_lottery_net_df(selected_state)
-            if not fresh_df.empty:
-                fresh_df.to_csv(DATA_FILE, index=False)
-            st.success("Updated!")
-            st.rerun()
-
-with col_help:
-    if st.button("❓ Guide"):
-        user_guide_dialog()
-
-# --- Data Loading Logic ---
-@st.cache_data
-def load_data_cached(state_abbr):
-    """
-    Loads data from CSV if exists, otherwise scrapes.
-    Cached by Streamlit to prevent re-loading/re-scraping on every interaction.
-    """
-    filename = f"scratchoffs_{state_abbr}.csv"
-    if os.path.exists(filename):
-        try:
-            return pd.read_csv(filename)
-        except Exception:
-            return pd.DataFrame()
-    
-    # If no file exists, scrape
-    df = scrape_lottery_net_df(state_abbr)
-    if not df.empty:
-        df.to_csv(filename, index=False)
     return df
 
-# Load data
-df = load_data_cached(selected_state)
 
-# Display Last Fetched Date
-last_fetched_str = "Unknown"
-if not df.empty and "scrape_ts" in df.columns:
+def parse_tiers(value) -> list:
+    if not isinstance(value, str) or not value.strip():
+        return []
     try:
-        # Assuming scrape_ts is isoformat str
-        ts_str = df["scrape_ts"].iloc[0] 
-        # Convert to datetime to format nicely
-        ts_dt = datetime.fromisoformat(ts_str)
-        last_fetched_str = ts_dt.strftime("%b %d, %Y %I:%M %p")
-    except Exception:
-        pass
-
-st.caption(f"Last Fetched: **{last_fetched_str}**")
+        tiers = json.loads(value)
+    except ValueError:
+        return []
+    return tiers if isinstance(tiers, list) else []
 
 
-# --- Pre-processing / Calculations ---
-if not df.empty:
-    # Ensure relevant columns exist and are numeric
-    cols_to_numeric = ["price", "overall_odds_1_in", "top_prize_amount", "top_prizes_remaining", "all_prizes_remaining", "true_ev"]
-    for c in cols_to_numeric:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Win Probability (1 / odds) * 100 for percentage
-    if "overall_odds_1_in" in df.columns:
-        df["win_probability"] = (1 / df["overall_odds_1_in"] * 100).where(df["overall_odds_1_in"] > 0)
-    
-    # Is Dead?
-    if "top_prizes_remaining" in df.columns:
-        df["is_dead"] = df["top_prizes_remaining"] == 0
-    elif "all_prizes_remaining" in df.columns:
-        df["is_dead"] = df["all_prizes_remaining"] == 0
-    else:
-        df["is_dead"] = False
-
-    # EV (Prefer true_ev, fallback to estimated)
-    if "true_ev" not in df.columns:
-        df["true_ev"] = None
-    
-    # Fallback EV calc for display if true_ev is missing
-    df["estimated_ev"] = (df["top_prize_amount"] / df["overall_odds_1_in"]).where((df["overall_odds_1_in"] > 0))
-    df["display_ev"] = df["true_ev"].fillna(df["estimated_ev"])
+def scraped_at(df: pd.DataFrame):
+    try:
+        ts = datetime.fromisoformat(str(df["scrape_ts"].dropna().iloc[0]))
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    except (IndexError, ValueError):
+        return None
 
 
-# --- Main Dashboard Layout ---
+# ---------- Charts ----------
+def style_fig(fig: go.Figure, height: int = 420) -> go.Figure:
+    fig.update_layout(
+        template="plotly_dark",
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Manrope, sans-serif", color=TEXT, size=13),
+        margin=dict(l=10, r=10, t=30, b=10),
+        hoverlabel=dict(bgcolor="#17221c", bordercolor=GOLD, font=dict(family="Manrope", color=TEXT)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title=None, bgcolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(gridcolor="rgba(232,240,234,0.06)", zeroline=False, linecolor="rgba(232,240,234,0.12)")
+    fig.update_yaxes(gridcolor="rgba(232,240,234,0.06)", zeroline=False, linecolor="rgba(232,240,234,0.12)")
+    return fig
 
+
+PLOT_CONFIG = {"displayModeBar": False}
+
+
+# ---------- Sidebar ----------
+with st.sidebar:
+    st.markdown(
+        """<div class="brand"><div class="brand-mark">🍀</div>
+        <div><div class="brand-name">Lottery Luck</div><div class="brand-tag">Scratch-off insights</div></div></div>""",
+        unsafe_allow_html=True,
+    )
+    state = st.selectbox("State", list(STATE_SLUGS), format_func=lambda s: f"{STATE_NAMES[s]} ({s})", key="state")
+
+df = load_state(state)
 if df.empty:
-    st.warning("No data available. Try refreshing.")
+    st.error("No data could be loaded for this state. lottery.net may be unavailable; try refreshing later.")
     st.stop()
 
-# 1. Analytics Hero Section
-st.markdown("### 📊 Market Overview")
-col_chart, col_stats = st.columns([3, 1])
+with st.sidebar:
+    st.markdown('<div class="side-label">Filters</div>', unsafe_allow_html=True)
+    prices = sorted(df["price"].dropna().unique())
+    picked_prices = st.pills(
+        "Ticket price", prices, selection_mode="multi", default=prices, format_func=fmt_price,
+        key=f"prices_{state}",
+    )
+    query = st.text_input("Search games", placeholder="e.g. Cash, Diamond, 1785")
+    hide_dead = st.toggle("Hide games with no top prizes left", value=False)
 
-with col_chart:
-    # Prepare data for plot
-    plot_df = df.dropna(subset=["price", "display_ev"]).copy()
-    if not plot_df.empty:
-        # Add formatted columns for hover BEFORE filling NaNs for size
-        # This ensures the tooltip shows "Unknown" but the size calc doesn't crash
-        plot_df["formatted_jackpot"] = plot_df["top_prize_amount"].apply(format_currency)
-        plot_df["formatted_ev"] = plot_df["display_ev"].apply(lambda x: f"${x:.2f}")
-        plot_df["formatted_win"] = plot_df["win_probability"].apply(lambda x: f"{x:.1f}%")
+    st.markdown('<div class="side-label">Data</div>', unsafe_allow_html=True)
+    if st.button("Refresh from lottery.net", icon=":material/refresh:", width="stretch"):
+        with st.spinner(f"Scraping {STATE_NAMES[state]}… about one second per game."):
+            fresh = scrape_lottery_net_df(state)
+        if fresh.empty:
+            st.warning("Scrape returned no rows; keeping the saved data.")
+        else:
+            fresh.to_csv(csv_path(state), index=False)
+            st.cache_data.clear()
+            st.rerun()
+    st.markdown(
+        '<div class="side-note">Source: <a href="https://www.lottery.net" target="_blank">lottery.net</a> and '
+        '<a href="https://scratchcards.net" target="_blank">scratchcards.net</a>. Always confirm with the official '
+        "state lottery before buying.</div>",
+        unsafe_allow_html=True,
+    )
 
-        # Now fill NaN jackpots with 0 so the bubble size logic works (Value cannot be NaN for size)
-        plot_df["top_prize_amount"] = plot_df["top_prize_amount"].fillna(0)
-
-        fig = px.scatter(
-            plot_df,
-            x="price",
-            y="display_ev",
-            color="win_probability",
-            size="top_prize_amount", # Bubble size based on jackpot
-            hover_name="game_name",
-            hover_data={
-                "game_name": False, # Shown in title
-                "price": ":$,.0f",
-                "formatted_ev": True,
-                "formatted_win": True,
-                "formatted_jackpot": True,
-                "display_ev": False,
-                "win_probability": False,
-                "top_prize_amount": False
-            },
-            labels={
-                "price": "Ticket Price ($)",
-                "formatted_ev": "True EV",
-                "formatted_win": "Win Prob",
-                "formatted_jackpot": "Jackpot"
-            },
-            title=None, # Clean look
-            color_continuous_scale="Viridis",
-            template="plotly_dark"
-        )
-        fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=10, b=10), # Tight margins
-            height=450, # Fixed height to fit
-            xaxis_title="Ticket Price ($)",
-            yaxis_title="Expected Value ($)",
-        )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-    else:
-        st.info("Not enough data for chart.")
-
-with col_stats:
-    # Quick Stats Cards - Simplified, No Arrows
-    best_ev_game = df.loc[df["display_ev"].idxmax()] if not df.empty else None
-    best_odds_game = df.loc[df["win_probability"].idxmax()] if not df.empty else None
-    
-    # Card 1: Best Value
-    st.markdown("#### 💎 Best Value")
-    if best_ev_game is not None:
-        st.metric(
-            label=f"{best_ev_game['game_name']}",
-            value=format_currency(best_ev_game['display_ev']),
-            help="Ticket with the highest Expected Value (Theoretical return per ticket)"
-        )
-    
-    st.divider()
-
-    # Card 2: Best Odds
-    st.markdown("#### 🎲 Best Odds")
-    if best_odds_game is not None:
-        st.metric(
-            label=f"{best_odds_game['game_name']}",
-            value=format_percent(best_odds_game['win_probability']),
-            help="Ticket with the highest probability of winning any prize"
-        )
+view = df[df["price"].isin(picked_prices)] if picked_prices else df
+if query:
+    q = query.strip().lower()
+    view = view[
+        view["game_name"].fillna("").str.lower().str.contains(q, regex=False)
+        | view["game_number"].map(lambda n: "" if is_missing(n) else str(int(n))).str.contains(q, regex=False)
+    ]
+if hide_dead:
+    view = view[view["status"] != "dead"]
 
 
-# 2. Game Browser Section
-st.divider()
-st.markdown("### 🎫 Tickets")
-
-# Filters
-f_col1, f_col2 = st.columns([1, 1], vertical_alignment="center")
-with f_col1:
-    available_prices = sorted(df["price"].dropna().unique()) if "price" in df.columns else []
-    price_filter = st.multiselect("Price ($)", available_prices, default=available_prices)
-
-filtered_df = df.copy()
-if price_filter and "price" in filtered_df.columns:
-    filtered_df = filtered_df[filtered_df["price"].isin(price_filter)]
-
-# Rename columns for display
-display_map = {
-    "game_name": "Game",
-    "price": "Price",
-    "top_prize_amount": "Top Prize",
-    "overall_odds_1_in": "Odds (1 in)",
-    "win_probability": "Win %",
-    "display_ev": "EV",
-    "top_prizes_remaining": "Top Rem.",
-    "is_dead": "Dead"
-}
-
-# Simplify Dataframe
-display_cols = [c for c in display_map.keys() if c in filtered_df.columns]
-final_df = filtered_df[display_cols].rename(columns=display_map)
-
-# Add Status Column using boolean
-if "Dead" in final_df.columns:
-    final_df["Status"] = final_df["Dead"].apply(lambda x: "🔴" if x else "🟢")
+# ---------- Hero ----------
+ts = scraped_at(df)
+if ts:
+    stale = datetime.now(timezone.utc) - ts > pd.Timedelta(days=STALE_AFTER_DAYS)
+    ts_label = ts.astimezone(DISPLAY_TZ).strftime("%b %-d, %Y · %-I:%M %p ET")
 else:
-    final_df["Status"] = "🟢"
+    stale, ts_label = True, "unknown"
 
-# Reorder
-final_cols = ["Status", "Game", "Price", "EV", "Top Prize", "Win %", "Odds (1 in)", "Top Rem."]
-final_df = final_df[[c for c in final_cols if c in final_df.columns]]
+st.markdown(
+    f"""<div class="hero"><div class="hero-row">
+      <div>
+        <div class="eyebrow">{esc(STATE_NAMES[state])} · {len(df)} active games</div>
+        <h1>Find the tickets with <em>prizes left</em>.</h1>
+        <p>Published odds side by side with how much of each game's tracked prize pool is still unclaimed,
+        so you can skip games where the big prizes are already gone.</p>
+      </div>
+      <div class="pill {'stale' if stale else ''}"><span class="dot"></span>Data as of {esc(ts_label)}</div>
+    </div></div>""",
+    unsafe_allow_html=True,
+)
 
-# Create formatted versions of large numbers for a custom displayed dataframe if we wanted full control
-# But st.dataframe column_config is better for sorting.
-# We will use column_config format parameters, but standard printf "%d" doesn't do "1M".
-# So we rely on standard numbers for the table to keep sorting working, but maybe use a tooltip or standard formatting.
-# The user asked to "round of all the numbers used and ensure the numbers are formatted well, ifi is a lrge number it shows M, B K".
-# st.column_config doesn't support 'format' functions, only printf strings.
-# So to get K/M/B in the table we actually MUST convert to string. If we do that, sorting breaks.
-# A compromise: showing them as strings, but maybe we can keep sorting if we use a different app approach (ag-grid), but for simple streamlit:
-# We will convert to formatted strings for "Top Prize". For "Price" and "EV" standard currency is fine.
 
-# Apply custom formatting to Top Prize for the table display
-if "Top Prize" in final_df.columns:
-    final_df["Top Prize"] = final_df["Top Prize"].apply(format_currency)
+# ---------- KPIs ----------
+def kpi(label: str, tag: str, value: str, sub: str) -> str:
+    return (
+        f'<div class="kpi"><div class="kpi-label"><span>{label}</span>'
+        f'<span class="kpi-tag {tag}">{tag}</span></div>'
+        f'<div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>'
+    )
 
-st.dataframe(
-    final_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Price": st.column_config.NumberColumn(format="$%d"),
-        "EV": st.column_config.NumberColumn(format="$%.2f"),
-        "Win %": st.column_config.NumberColumn(format="%.1f%%"),
-        "Odds (1 in)": st.column_config.NumberColumn(format="%.2f"),
-        "Game": st.column_config.TextColumn(width="medium"),
-        "Status": st.column_config.TextColumn(width="small"),
-        "Top Prize": st.column_config.TextColumn(label="Top Prize"), # Treat as text now
-    },
-    height=600
+
+live_known = view[view["status"] != "unknown"]
+n_live = int((live_known["status"] == "live").sum())
+candidates = view[view["status"] != "dead"]
+best_odds = candidates.dropna(subset=["overall_odds_1_in"]).nsmallest(1, "overall_odds_1_in")
+best_pool = candidates.dropna(subset=["prize_pool_remaining_pct"]).nlargest(1, "prize_pool_remaining_pct")
+
+cards = [
+    kpi("Games shown", "published", f"{len(view)}<small> / {len(df)}</small>",
+        f"{len(prices)} price points from {fmt_price(min(prices)) if prices else '—'} to {fmt_price(max(prices)) if prices else '—'}"),
+    kpi("Top prize left", "published", f"{n_live}<small> / {len(live_known)}</small>",
+        f"{len(live_known) - n_live} games have no top prizes left"),
+]
+if not best_odds.empty:
+    g = best_odds.iloc[0]
+    cards.append(kpi("Best odds", "published", f"1 in {g['overall_odds_1_in']:.2f}",
+                     f"<b>{esc(g['game_name'])}</b> · {fmt_price(g['price'])}"))
+else:
+    cards.append(kpi("Best odds", "published", "—", "No odds published"))
+if not best_pool.empty:
+    g = best_pool.iloc[0]
+    cards.append(kpi("Prize value left", "calculated", f"{g['prize_pool_remaining_pct']:.0f}%",
+                     f"<b>{esc(g['game_name'])}</b> · {fmt_price(g['price'])}"))
+else:
+    cards.append(kpi("Prize value left", "calculated", "—", "Tier quantities not published"))
+st.markdown(f'<div class="kpis">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+
+# ---------- Tabs ----------
+tab_games, tab_explore, tab_detail, tab_method = st.tabs(
+    ["🎟️  Games", "📈  Explore", "🔎  Game detail", "📘  How it works"]
+)
+
+STATUS_LABEL = {"live": "🟢 Top prize left", "dead": "🔴 Top prizes gone", "unknown": "⚪ Unknown"}
+
+with tab_games:
+    st.markdown('<div class="section-title">Every game, side by side</div>'
+                '<div class="section-sub">Click a column header to sort. Prize value left covers the prize tiers '
+                "scratchcards.net tracks; it is blank when original tier quantities aren't published.</div>",
+                unsafe_allow_html=True)
+    table = view.assign(status_label=view["status"].map(STATUS_LABEL)).sort_values(
+        ["prize_pool_remaining_pct", "overall_odds_1_in"], ascending=[False, True], na_position="last"
+    )
+    st.dataframe(
+        table,
+        hide_index=True,
+        width="stretch",
+        height=560,
+        column_order=[
+            "status_label", "game_name", "game_number", "price", "overall_odds_1_in", "win_pct",
+            "top_prize_label", "top_prizes_remaining", "prize_pool_remaining_pct",
+        ],
+        column_config={
+            "status_label": st.column_config.TextColumn("Status"),
+            "game_name": st.column_config.TextColumn("Game", width="medium"),
+            "game_number": st.column_config.NumberColumn("Game #", format="%d"),
+            "price": st.column_config.NumberColumn("Price", format="$%d"),
+            "overall_odds_1_in": st.column_config.NumberColumn("Odds (1 in)", format="%.2f",
+                                                               help="Published odds of winning any prize"),
+            "win_pct": st.column_config.NumberColumn("Win chance", format="%.1f%%",
+                                                     help="1 ÷ published odds"),
+            "top_prize_label": st.column_config.TextColumn("Top prize"),
+            "top_prizes_remaining": st.column_config.NumberColumn("Top prizes left", format="%d"),
+            "prize_pool_remaining_pct": st.column_config.ProgressColumn(
+                "Prize value left", format="%.0f%%", min_value=0, max_value=100,
+                help="Calculated: unclaimed prize value ÷ original prize value across tracked tiers",
+            ),
+        },
+    )
+    st.download_button(
+        "Download CSV", view.drop(columns=["prize_data"]).to_csv(index=False).encode(),
+        file_name=f"lottery_luck_{state}.csv", mime="text/csv", icon=":material/download:",
+    )
+
+with tab_explore:
+    left, right = st.columns([3, 2], gap="large")
+    with left:
+        st.markdown('<div class="section-title">Odds vs. prizes remaining</div>'
+                    '<div class="section-sub">Up and to the right is better: higher win chance and more prize '
+                    "value still in play. Bubble size is ticket price.</div>", unsafe_allow_html=True)
+        plot = view.dropna(subset=["win_pct", "prize_pool_remaining_pct"]).copy()
+        if plot.empty:
+            st.info("No games with both published odds and tier quantities in this selection.")
+        else:
+            plot["Status"] = plot["status"].map({"live": "Top prize left", "dead": "Top prizes gone", "unknown": "Unknown"})
+            plot["price_label"] = plot["price"].map(fmt_price)
+            fig = px.scatter(
+                plot, x="win_pct", y="prize_pool_remaining_pct", size="price", size_max=28,
+                color="Status", hover_name="game_name",
+                color_discrete_map={"Top prize left": EMERALD, "Top prizes gone": RED, "Unknown": MUTED},
+                custom_data=["price_label", "overall_odds_1_in", "top_prize_label", "top_prizes_remaining"],
+            )
+            fig.update_traces(
+                marker=dict(line=dict(width=1, color="rgba(10,15,12,0.8)"), opacity=0.85),
+                hovertemplate="<b>%{hovertext}</b><br>%{customdata[0]} ticket · 1 in %{customdata[1]:.2f}"
+                              "<br>Prize value left: %{y:.0f}%<br>Top prize: %{customdata[2]} "
+                              "(%{customdata[3]} left)<extra></extra>",
+            )
+            fig.update_xaxes(title="Win chance (published odds)", ticksuffix="%")
+            fig.update_yaxes(title="Prize value left (calculated)", ticksuffix="%", range=[0, 105])
+            st.plotly_chart(style_fig(fig, 460), config=PLOT_CONFIG)
+
+    with right:
+        st.markdown('<div class="section-title">By price point</div>'
+                    '<div class="section-sub">Average published win chance for each ticket price.</div>',
+                    unsafe_allow_html=True)
+        by_price = (
+            view.dropna(subset=["price", "win_pct"]).groupby("price")
+            .agg(win_pct=("win_pct", "mean"), games=("game_name", "count")).reset_index()
+        )
+        if by_price.empty:
+            st.info("No published odds in this selection.")
+        else:
+            by_price["label"] = by_price["price"].map(fmt_price)
+            fig = go.Figure(go.Bar(
+                x=by_price["label"], y=by_price["win_pct"],
+                marker=dict(color=by_price["win_pct"], colorscale=[[0, "#1f3a2d"], [1, GOLD]], line=dict(width=0)),
+                text=by_price["win_pct"].map(lambda v: f"{v:.1f}%"), textposition="outside",
+                customdata=by_price["games"],
+                hovertemplate="<b>%{x} tickets</b><br>Avg win chance %{y:.1f}%<br>%{customdata} games<extra></extra>",
+            ))
+            fig.update_yaxes(ticksuffix="%", range=[0, by_price["win_pct"].max() * 1.2])
+            fig.update_xaxes(type="category", title=None, tickangle=0)
+            st.plotly_chart(style_fig(fig, 460), config=PLOT_CONFIG)
+
+with tab_detail:
+    if view.empty:
+        st.info("No games match the current filters.")
+    else:
+        options = view.sort_values(["price", "game_name"]).index.tolist()
+        pick = st.selectbox(
+            "Choose a game", options, key=f"game_{state}",
+            format_func=lambda i: f"{view.at[i, 'game_name']}  ·  {fmt_price(view.at[i, 'price'])}"
+                                  + ("" if is_missing(view.at[i, 'game_number']) else f"  ·  #{int(view.at[i, 'game_number'])}"),
+        )
+        g = view.loc[pick]
+        badge = {"live": ("live", "Top prize available"), "dead": ("dead", "No top prizes left"),
+                 "unknown": ("unknown", "Top-prize status unknown")}[g["status"]]
+        game_no = "" if is_missing(g["game_number"]) else f"Game #{int(g['game_number'])} · "
+        st.markdown(
+            f"""<div class="detail-head"><div>
+                <div class="detail-name">{esc(g['game_name'])}</div>
+                <div class="detail-meta">{game_no}{fmt_price(g['price'])} ticket ·
+                Top prize {esc(g['top_prize_label'])}</div></div>
+                <span class="badge {badge[0]}">{badge[1]}</span></div>""",
+            unsafe_allow_html=True,
+        )
+        odds_txt = "—" if is_missing(g["overall_odds_1_in"]) else f"1 in {g['overall_odds_1_in']:.2f}"
+        win_txt = "" if is_missing(g["win_pct"]) else f"{g['win_pct']:.1f}% chance to win something"
+        pool_txt = "—" if is_missing(g["prize_pool_remaining_pct"]) else f"{g['prize_pool_remaining_pct']:.0f}%"
+        st.markdown(
+            '<div class="kpis">'
+            + kpi("Overall odds", "published", odds_txt, win_txt)
+            + kpi("Top prizes left", "published", fmt_int(g["top_prizes_remaining"]), esc(g["top_prize_label"]))
+            + kpi("Prizes left", "calculated", fmt_int(g["tracked_prizes_remaining"]),
+                  f"of {fmt_int(g['tracked_prizes_total'])} tracked" if not is_missing(g["tracked_prizes_total"]) else "tracked tiers")
+            + kpi("Prize value left", "calculated", pool_txt, "unclaimed ÷ original value")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+        tiers = parse_tiers(g["prize_data"])
+        if not tiers:
+            st.info("No prize-tier data was scraped for this game.")
+        else:
+            tiers_df = pd.DataFrame(tiers)
+            for c in ("tier", "prize_text", "quantity", "claimed", "remaining"):
+                if c not in tiers_df.columns:
+                    tiers_df[c] = pd.NA
+            has_qty = tiers_df["quantity"].notna().all()
+            if has_qty:
+                tiers_df["left_pct"] = (100 * tiers_df["remaining"] / tiers_df["quantity"]).where(tiers_df["quantity"] > 0)
+
+            chart_col, table_col = st.columns([1, 1], gap="large")
+            with chart_col:
+                st.markdown('<div class="section-title">Prize tiers</div>'
+                            '<div class="section-sub">Share of each tier still unclaimed.</div>', unsafe_allow_html=True)
+                labels = tiers_df["prize_text"].fillna("?")
+                fig = go.Figure()
+                if has_qty:
+                    fig.add_bar(y=labels, x=tiers_df["left_pct"], orientation="h", name="Left", marker_color=EMERALD,
+                                customdata=tiers_df[["remaining", "quantity"]],
+                                hovertemplate="<b>%{y}</b><br>%{customdata[0]:,} of %{customdata[1]:,} left<extra></extra>")
+                    fig.add_bar(y=labels, x=100 - tiers_df["left_pct"], orientation="h", name="Claimed",
+                                marker_color="rgba(232,240,234,0.10)", hoverinfo="skip")
+                    fig.update_layout(barmode="stack")
+                    fig.update_xaxes(range=[0, 100], ticksuffix="%")
+                else:
+                    fig.add_bar(y=labels, x=tiers_df["remaining"], orientation="h", name="Remaining", marker_color=EMERALD,
+                                hovertemplate="<b>%{y}</b><br>%{x:,} left<extra></extra>")
+                    fig.update_xaxes(type="log", title="Prizes remaining (log scale)")
+                fig.update_yaxes(autorange="reversed", type="category")
+                st.plotly_chart(style_fig(fig, max(260, 34 * len(tiers_df) + 80)), config=PLOT_CONFIG)
+            with table_col:
+                st.markdown('<div class="section-title">Tier table</div>'
+                            '<div class="section-sub">As listed by scratchcards.net.</div>', unsafe_allow_html=True)
+                st.dataframe(
+                    tiers_df, hide_index=True, width="stretch",
+                    column_order=["prize_text", "quantity", "claimed", "remaining"],
+                    column_config={
+                        "prize_text": st.column_config.TextColumn("Prize"),
+                        "quantity": st.column_config.NumberColumn("Printed", format="localized"),
+                        "claimed": st.column_config.NumberColumn("Claimed", format="localized"),
+                        "remaining": st.column_config.NumberColumn("Left", format="localized"),
+                    },
+                )
+        if isinstance(g["detail_url"], str) and g["detail_url"].startswith("http"):
+            st.link_button("View source page", g["detail_url"], icon=":material/open_in_new:")
+
+with tab_method:
+    st.markdown(
+        """<div class="method-grid">
+        <div class="method-card"><h4><span class="kpi-tag published">published</span>&nbsp; From the source</h4><dl>
+          <dt>Overall odds</dt><dd>The printed odds of winning any prize, e.g. "1 in 3.74". Lower is better.</dd>
+          <dt>Win chance</dt><dd>1 ÷ overall odds, shown as a percentage. It's the same number, just easier to compare.</dd>
+          <dt>Top prize &amp; top prizes left</dt><dd>As listed on lottery.net. If a state's list leaves them out,
+          they come from tier 1 of the game's prize table. Annuity prizes like "$1K/WK/LIFE" show as text because
+          they don't have a single cash value.</dd>
+        </dl></div>
+        <div class="method-card"><h4><span class="kpi-tag calculated">calculated</span>&nbsp; Our estimates</h4><dl>
+          <dt>Prize value left</dt><dd>Σ(prize × remaining) ÷ Σ(prize × printed) across the tiers scratchcards.net
+          lists. Free-ticket prizes count at the ticket price; annuity prizes are left out. A low number means most of
+          the money has already been won. It's blank when printed quantities aren't published (for example, PA).</dd>
+          <dt>Prizes left</dt><dd>Total remaining prizes across those same tracked tiers.</dd>
+          <dt>Why no "expected value"?</dt><dd>A real EV needs the number of unsold tickets, which no source publishes.
+          Instead of inventing that number, we show how much of the prize pool is left. That's a relative signal,
+          not a promise of a return.</dd>
+        </dl></div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+    st.caption(
+        "Data comes from third-party aggregators and can lag official state lottery reports by days. "
+        "Prize counts change as tickets are claimed."
+    )
+
+st.markdown(
+    """<div class="footer">Lottery Luck is an informational tool, not financial advice. Every scratch-off has a
+    negative expected return on average, so play for fun and only spend what you can afford to lose.<br>
+    Need help? Call <a href="tel:18004262537">1-800-GAMBLER</a>.</div>""",
+    unsafe_allow_html=True,
 )
